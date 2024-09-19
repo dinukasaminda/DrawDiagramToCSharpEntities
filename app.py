@@ -6,8 +6,17 @@ from math import inf
 # Define a class to hold the object details
 class DiagramObject:
     def __init__(self, obj_id, value, x, y, width, height, fill_color):
+
+        # split value by space 
+        values = value.split(" ")
+        if len(values) == 2:
+            self.value = values[1].strip()
+            self.dtype = values[0].strip()
+        else:
+            self.value = value
+            self.dtype = None
+
         self.obj_id = obj_id
-        self.value = value
         self.x = x
         self.y = y
         self.width = width
@@ -17,22 +26,55 @@ class DiagramObject:
     def __repr__(self):
         return f"DiagramObject(id={self.obj_id}, value={self.value}, x={self.x}, y={self.y}, width={self.width}, height={self.height}, fillColor={self.fill_color})"
 
+
+# Define a class to hold the relationship details
+class Relationship:
+    def __init__(self, source_id, target_id, relation_type, label):
+        self.source_id = source_id
+        self.target_id = target_id
+        self.relation_type = relation_type
+        self.label = label
+
+    def __repr__(self):
+        return f"Relationship(source={self.source_id}, target={self.target_id}, type={self.relation_type}, label={self.label})"
+
+
 def parseIntOrNone(value):
     try:
         return int(value)
     except:
         return None
+
+
 # Function to parse the XML and extract the required details
 def parse_xml(xml_data):
     root = ET.fromstring(xml_data)
     diagram_objects = []
+    relationships = []
 
-    # Iterate over all mxCell elements
+    # Store mapping of edge IDs to their labels
+    relationship_labels = {}
+
+    # First pass to get relationship labels (values with edgeLabel style)
+    for cell in root.findall(".//mxCell"):
+        cell_id = cell.attrib.get("id")
+        value = cell.attrib.get("value")
+        style = cell.attrib.get("style")
+        parent = cell.attrib.get("parent")
+
+        # Look for labels with style containing "edgeLabel"
+        if style and "edgeLabel" in style and value and parent:
+            relationship_labels[parent] = value
+
+    # Second pass to extract objects and relationships
     for cell in root.findall(".//mxCell"):
         obj_id = cell.attrib.get("id")
         value = cell.attrib.get("value")
         style = cell.attrib.get("style")
         geometry = cell.find("mxGeometry")
+        edge = cell.attrib.get("edge", "0")  # Check if it's an edge
+        source = cell.attrib.get("source")
+        target = cell.attrib.get("target")
 
         if geometry is not None:
             x = parseIntOrNone(geometry.attrib.get("x"))
@@ -51,18 +93,48 @@ def parse_xml(xml_data):
                     fill_color = s.split("=")[1]
                     break
 
-        if obj_id and value:
+        if edge == "1":  # If this is an edge, handle the relationship
+            relation_type = classify_relationship(style)
+            label = relationship_labels.get(obj_id, "")  # Get the relationship label if it exists
+            relationships.append(Relationship(source, target, relation_type, label))
+        elif obj_id and value:  # Otherwise, handle as a normal diagram object
             diagram_object = DiagramObject(obj_id, value, x, y, width, height, fill_color)
             diagram_objects.append(diagram_object)
 
-    return diagram_objects
+    return diagram_objects, relationships
+
+
+# Function to classify the relationship based on the startArrow and endArrow
+def classify_relationship(style):
+    if not style:
+        return "unknown"
+
+    start_arrow = None
+    end_arrow = None
+    styles = style.split(";")
+    for s in styles:
+        if "startArrow" in s:
+            start_arrow = s.split("=")[1]
+        if "endArrow" in s:
+            end_arrow = s.split("=")[1]
+
+    if start_arrow == "ERone" and end_arrow == "ERmany":
+        return "one-to-many"
+    elif start_arrow == "ERmany" and end_arrow == "ERmany":
+        return "many-to-many"
+    elif start_arrow == "ERone" and end_arrow == "ERone":
+        return "one-to-one"
+    elif start_arrow == "ERmany" and end_arrow == "ERone":
+        return "many-to-one"
+    else:
+        return "unknown"
+
 
 # Function to calculate the minimum distance between two diagram objects
 def calculate_distance(obj1, obj2):
-
     if obj1.x is None or obj1.y is None or obj1.width is None or obj1.height is None:
         return inf
-    
+
     if obj2.x is None or obj2.y is None or obj2.width is None or obj2.height is None:
         return inf
 
@@ -84,6 +156,7 @@ def calculate_distance(obj1, obj2):
 
     # The minimum distance between objects is the larger of the two distances
     return max(horizontal_distance, vertical_distance)
+
 
 # Function to cluster objects based on distance threshold
 def cluster_objects(objects, max_distance):
@@ -107,7 +180,7 @@ def cluster_objects(objects, max_distance):
                     if distance <= max_distance:
                         visited.add(i)
                         queue.append(i)
-        
+
         return cluster
 
     for i in range(len(objects)):
@@ -117,39 +190,40 @@ def cluster_objects(objects, max_distance):
 
     return clusters
 
+
 # Example XML data
 xml_data = ""
 
 # Read the XML data from the file
-file_path = os.path.join(os.path.dirname(__file__), "ERD-v1.drawio.xml")
+file_path = os.path.join(os.path.dirname(__file__), "ERD-v1-one-to-many.drawio.xml")
 
 # read as utf-8
 with open(file_path, "r", encoding="utf-8") as file:
     xml_data = file.read()
 
-# Parse the XML and create the list of objects
-diagram_objects = parse_xml(xml_data)
-
-# # Print the list of diagram objects
-# for obj in diagram_objects:
-#     print(obj)
+# Parse the XML and create the list of objects and relationships
+diagram_objects, relationships = parse_xml(xml_data)
 
 # Cluster the objects based on a maximum distance of 4 units
 max_distance = 4
 clusters = cluster_objects(diagram_objects, max_distance)
 
-
 outputText = ""
-# Print the clusters
+# Print the clusters and their relationships
 for cluster_index, cluster in enumerate(clusters):
     if len(cluster) < 2:
         continue
-    outputText+=f"Cluster {cluster_index + 1}:\n"
+    outputText += f"Cluster {cluster_index + 1}:\n"
     mainObj = cluster[0]
-    outputText+=f"TableName:  {mainObj.value}\n"
-    for  obj in cluster[1:]:
-        outputText+=f"Column:  {obj.value}\n"
+    outputText += f"TableName:  {mainObj.value} {mainObj.obj_id}\n"
+    for obj in cluster[1:]:
+        outputText += f"Column: {obj.dtype} {obj.value} {obj.obj_id}\n"
 
-# save file 
+# Print relationships
+outputText += "\nRelationships:\n"
+for rel in relationships:
+    outputText += f"Source: {rel.source_id}, Target: {rel.target_id}, Type: {rel.relation_type}, Label: {rel.label}\n"
+
+# Save file 
 with open('output.txt', 'w') as f:
     f.write(outputText)
